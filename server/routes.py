@@ -4,9 +4,11 @@
 
 import json
 import asyncio
+import time
 from aiohttp import web
 
 from utils.logger import logger
+from utils.trace import new_trace, mark, trace_id
 
 
 # ─── 路由工具函数 ──────────────────────────────────────────────────────────
@@ -42,30 +44,45 @@ def get_session(request, sessionid: str):
 
 async def human(request):
     """文本输入（echo/chat 模式），支持 voice/emotion 参数"""
+    route_start = time.perf_counter()
     try:
         params: dict = await request.json()
 
         sessionid: str = params.get('sessionid', '')
+        datainfo = new_trace(sessionid=sessionid, route="human")
+        mark(
+            datainfo,
+            "http.human.request",
+            detail=(
+                f"type={params.get('type')} text_len={len(params.get('text', ''))} "
+                f"json_ms={(time.perf_counter() - route_start) * 1000:.1f}"
+            ),
+        )
+
         avatar_session = get_session(request, sessionid)
         if avatar_session is None:
+            mark(datainfo, "http.human.session_missing")
             return json_error("session not found")
 
         if params.get('interrupt'):
+            mark(datainfo, "http.human.interrupt")
             avatar_session.flush_talk()
 
-        datainfo = {}
         if params.get('tts'):  # tts 参数透传（voice, emotion 等）
             datainfo['tts'] = params.get('tts')
 
         if params['type'] == 'echo':
+            mark(datainfo, "http.human.dispatch_echo")
             avatar_session.put_msg_txt(params['text'], datainfo)
         elif params['type'] == 'chat':
             llm_response = request.app.get("llm_response")
             if llm_response:
+                mark(datainfo, "http.human.dispatch_chat_executor")
                 asyncio.get_event_loop().run_in_executor(
                     None, llm_response, params['text'], avatar_session, datainfo
                 )
 
+        mark(datainfo, "http.human.response_ok", detail=f"trace_id={trace_id(datainfo)}")
         return json_ok()
     except Exception as e:
         logger.exception('human route exception:')

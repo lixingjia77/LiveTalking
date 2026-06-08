@@ -47,6 +47,7 @@ from fractions import Fraction
 
 from utils.logger import logger
 from utils.image import read_imgs,mirror_index
+from utils.trace import mark, strip_trace
 
 # class State(Enum):
 #     INIT=0
@@ -124,10 +125,17 @@ class BaseAvatar:
 
     # 如果系统没有使用 pipeline，或者为了向后兼容原来的 ttsreal.py
     def put_msg_txt(self, msg, datainfo:dict={}):
+        mark(datainfo, "avatar.put_msg_txt", detail=f"sessionid={self.sessionid} text_len={len(msg)}")
         if hasattr(self, 'tts'):
             self.tts.put_msg_txt(msg, datainfo)
     
     def put_audio_frame(self, audio_chunk:NDArray[np.float32], datainfo:dict={}): # 16khz 20ms pcm
+        mark(
+            datainfo,
+            "avatar.first_audio_frame_received",
+            detail=f"samples={audio_chunk.shape[0]}",
+            once_key="avatar_first_audio_frame_received",
+        )
         if hasattr(self, 'asr'):
             self.asr.put_audio_frame(audio_chunk, datainfo)
 
@@ -340,6 +348,17 @@ class BaseAvatar:
                 if audioframe.type == 0:
                     is_all_silence = False               
                 audio_frames.append(audioframe)
+            first_trace = next(
+                (frame.userdata for frame in audio_frames if frame.type == 0 and frame.userdata.get("_trace_start")),
+                None,
+            )
+            if first_trace:
+                mark(
+                    first_trace,
+                    "avatar.infer.first_audio_batch",
+                    detail=f"batch_audio_frames={len(audio_frames)} res_qsize={self.res_frame_queue.qsize()}",
+                    once_key="avatar_first_audio_batch",
+                )
 
              # 检测状态变化
             current_speaking = not is_all_silence
@@ -347,15 +366,37 @@ class BaseAvatar:
             if is_all_silence: #全为静音数据，只需要取fullimg，不需要推理
                 for i in range(self.batch_size):
                     idx = mirror_index(length, index)
+                    if first_trace and i == 0:
+                        mark(
+                            first_trace,
+                            "avatar.infer.first_silence_frame_enqueue",
+                            detail=f"res_qsize={self.res_frame_queue.qsize()}",
+                            once_key="avatar_first_frame_enqueue",
+                        )
                     self.res_frame_queue.put((None, audio_frames[i*2:i*2+2], idx))
                     index = index + 1
             else:
                 if current_speaking and not last_speaking and self.custom_index.get(1) is not None: #从静音到说话切换,并且有自定义静态视频
                     index = 0
                 t = time.perf_counter()
+                if first_trace:
+                    mark(
+                        first_trace,
+                        "avatar.infer.first_model_start",
+                        detail=f"batch_size={self.batch_size}",
+                        once_key="avatar_first_model_start",
+                    )
 
                 pred = self.inference_batch(index, audiofeat_batch)
 
+                infer_cost_ms = (time.perf_counter() - t) * 1000
+                if first_trace:
+                    mark(
+                        first_trace,
+                        "avatar.infer.first_model_done",
+                        detail=f"cost_ms={infer_cost_ms:.1f}",
+                        once_key="avatar_first_model_done",
+                    )
                 counttime += (time.perf_counter() - t)
                 count += self.batch_size
                 if count >= 100:
@@ -363,6 +404,13 @@ class BaseAvatar:
                     count = 0
                     counttime = 0
                 for i, res_frame in enumerate(pred):
+                    if first_trace and i == 0:
+                        mark(
+                            first_trace,
+                            "avatar.infer.first_frame_enqueue",
+                            detail=f"res_qsize={self.res_frame_queue.qsize()}",
+                            once_key="avatar_first_frame_enqueue",
+                        )
                     self.res_frame_queue.put((res_frame, audio_frames[i*2:i*2+2], mirror_index(length, index)))
                     index = index + 1
                     
@@ -389,6 +437,17 @@ class BaseAvatar:
                 res_frame,audio_frames,idx = self.res_frame_queue.get(block=True, timeout=1)
             except queue.Empty:
                 continue
+            first_trace = next(
+                (frame.userdata for frame in audio_frames if frame.type == 0 and frame.userdata.get("_trace_start")),
+                None,
+            )
+            if first_trace:
+                mark(
+                    first_trace,
+                    "avatar.output.first_frame_dequeue",
+                    detail=f"res_qsize={self.res_frame_queue.qsize()}",
+                    once_key="avatar_first_output_dequeue",
+                )
             
             # 检测状态变化
             current_speaking = not (audio_frames[0].type!=0 and audio_frames[1].type!=0)
@@ -440,6 +499,12 @@ class BaseAvatar:
             cv2.putText(combine_frame, "LiveTalking", (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.3, (128,128,128), 1)
             
             # 使用统一输出接口推送视频帧
+            if first_trace:
+                mark(
+                    first_trace,
+                    "avatar.output.first_video_push",
+                    once_key="avatar_first_video_push",
+                )
             self.output.push_video_frame(combine_frame)
             self.record_video_data(combine_frame)
 
@@ -448,7 +513,13 @@ class BaseAvatar:
                 frame = (audio_frame.data * 32767).astype(np.int16)
 
                 # 使用统一输出接口推送音频帧
-                self.output.push_audio_frame(frame, audio_frame.userdata)
+                if audio_frame.type == 0 and audio_frame.userdata.get("_trace_start"):
+                    mark(
+                        audio_frame.userdata,
+                        "avatar.output.first_audio_push",
+                        once_key="avatar_first_audio_push",
+                    )
+                self.output.push_audio_frame(frame, strip_trace(audio_frame.userdata))
                 self.record_audio_data(frame)
                 
             # if self.opt.transport == 'virtualcam' and hasattr(self.output, '_cam') and self.output._cam:
@@ -490,4 +561,3 @@ class BaseAvatar:
 
         process_quit_event.set()
         process_thread.join()
-

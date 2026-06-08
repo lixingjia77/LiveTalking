@@ -24,6 +24,7 @@ from numpy.typing import NDArray
 import torch.multiprocessing as mp
 
 from avatars.base_avatar import BaseAvatar,AudioFrameData
+from utils.trace import mark
 
 
 class BaseASR:
@@ -51,6 +52,12 @@ class BaseASR:
         self.queue.queue.clear()
 
     def put_audio_frame(self,audio_chunk:NDArray[np.float32],datainfo:dict): #16khz 20ms pcm
+        mark(
+            datainfo,
+            "asr.queue.first_audio_enqueue",
+            detail=f"qsize={self.queue.qsize()} samples={audio_chunk.shape[0]}",
+            once_key="asr_first_audio_enqueue",
+        )
         self.queue.put(AudioFrameData(data=audio_chunk,type=0,userdata=datainfo))
 
     #return frame:audio pcm; type: 0-normal speak, 1-silence; eventpoint:custom event sync with audio
@@ -62,6 +69,12 @@ class BaseASR:
                 return AudioFrameData(data=frame, type=type, userdata={})
             else:
                 frame = self.queue.get(block=True,timeout=0.01)
+                mark(
+                    frame.userdata,
+                    "asr.queue.first_audio_dequeue",
+                    detail=f"qsize={self.queue.qsize()}",
+                    once_key="asr_first_audio_dequeue",
+                )
                 return frame
             #print(f'[INFO] get frame {frame.shape}')
         except queue.Empty:

@@ -4,11 +4,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from avatars.base_avatar import BaseAvatar
 from utils.logger import logger
+from utils.trace import mark
 
 def llm_response(message,avatar_session:'BaseAvatar',datainfo:dict={}):
     try:
         opt = avatar_session.opt
         start = time.perf_counter()
+        mark(datainfo, "llm.start", detail=f"text_len={len(message)}")
         from openai import OpenAI
         client = OpenAI(
             # 如果您没有配置环境变量，请在此处用您的API Key进行替换
@@ -18,6 +20,7 @@ def llm_response(message,avatar_session:'BaseAvatar',datainfo:dict={}):
         )
         end = time.perf_counter()
         logger.info(f"llm Time init: {end-start}s,{message}")
+        mark(datainfo, "llm.client_ready", detail=f"cost_ms={(end-start)*1000:.1f}")
         completion = client.chat.completions.create(
             model="qwen-plus",
             messages=[{'role': 'system', 'content': '你是一个知识助手，尽量以简短、口语化的方式输出'},
@@ -34,6 +37,7 @@ def llm_response(message,avatar_session:'BaseAvatar',datainfo:dict={}):
                 if first:
                     end = time.perf_counter()
                     logger.info(f"llm Time to first chunk: {end-start}s")
+                    mark(datainfo, "llm.first_chunk", detail=f"cost_ms={(end-start)*1000:.1f}")
                     first = False
                 msg = chunk.choices[0].delta.content
                 if msg is None:
@@ -46,12 +50,15 @@ def llm_response(message,avatar_session:'BaseAvatar',datainfo:dict={}):
                         lastpos = i+1
                         if len(result)>10:
                             logger.info(result)
+                            mark(datainfo, "llm.first_text_to_avatar", detail=f"text_len={len(result)}", once_key="llm_first_text_to_avatar")
                             avatar_session.put_msg_txt(result,datainfo)
                             result=""
                 result = result+msg[lastpos:]
         end = time.perf_counter()
         logger.info(f"llm Time to last chunk: {end-start}s")
+        mark(datainfo, "llm.done", detail=f"cost_ms={(end-start)*1000:.1f}")
         if result:
+            mark(datainfo, "llm.final_text_to_avatar", detail=f"text_len={len(result)}")
             avatar_session.put_msg_txt(result,datainfo)
         
     except Exception as e:

@@ -26,6 +26,7 @@ import queue
 from queue import Queue
 from avatars.audio_features.base_asr import BaseASR
 from avatars.musetalk.whisper.audio2feature import Audio2Feature
+from utils.trace import mark
 
 class WhisperASR(BaseASR):
     def __init__(self, opt, parent, audio_processor:Audio2Feature):
@@ -60,6 +61,8 @@ class WhisperASR(BaseASR):
         start_time = time.time()
         for _ in range(self.batch_size*2):
             audio_frame = self.get_audio_frame()
+            if audio_frame.type == 0:
+                first_userdata = audio_frame.userdata
             self.frames.append(audio_frame.data)
             self.output_queue.put(audio_frame)
         
@@ -71,6 +74,13 @@ class WhisperASR(BaseASR):
         whisper_chunks = self._feature2chunks(feature_array=whisper_feature,batch_size=self.batch_size,
                                               audio_feat_win = [0,5],start=self.stride_left_size/2,
                                               feature_idx_multiplier=2)
+        if 'first_userdata' in locals():
+            mark(
+                first_userdata,
+                "asr.whisper.first_feat_enqueue",
+                detail=f"batch={len(whisper_chunks)} feat_qsize={self.feat_queue.qsize()} cost_ms={(time.time() - start_time) * 1000:.1f}",
+                once_key="asr_first_feat_enqueue",
+            )
         self.feat_queue.put(whisper_chunks)
         # discard the old part to save memory
         self.frames = self.frames[-(self.stride_left_size + self.stride_right_size):]

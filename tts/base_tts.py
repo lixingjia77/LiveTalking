@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from avatars.base_avatar import BaseAvatar
 
 from utils.logger import logger
+from utils.trace import mark
 
 class State(Enum):
     RUNNING = 0
@@ -33,6 +34,11 @@ class BaseTTS:
 
     def put_msg_txt(self, msg: str, datainfo: dict = {}): 
         if len(msg) > 0:
+            mark(
+                datainfo,
+                "tts.queue.enqueue",
+                detail=f"tts={getattr(self.opt, 'tts', '')} text_len={len(msg)} qsize={self.msgqueue.qsize()}",
+            )
             self.msgqueue.put((msg, datainfo))
 
     def render(self, quit_event):
@@ -46,6 +52,11 @@ class BaseTTS:
                 self.state = State.RUNNING
             except queue.Empty:
                 continue
+            mark(
+                msg[1],
+                "tts.worker.dequeue",
+                detail=f"wait_qsize={self.msgqueue.qsize()}",
+            )
             self.txt_to_audio(msg)
         self.stop_tts()
         logger.info('ttsreal thread stop')

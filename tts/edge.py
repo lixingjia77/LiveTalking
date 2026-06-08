@@ -7,6 +7,7 @@ import edge_tts
 from io import BytesIO
 
 from utils.logger import logger
+from utils.trace import mark
 from .base_tts import BaseTTS, State
 from registry import register
 
@@ -15,15 +16,27 @@ class EdgeTTS(BaseTTS):
     def txt_to_audio(self,msg:tuple[str, dict]):
         text,textevent = msg
         voicename = textevent.get('tts', {}).get('ref_file',self.opt.REF_FILE) #self.opt.REF_FILE #"zh-CN-YunxiaNeural"
+        mark(textevent, "tts.edge.start", detail=f"voice={voicename} text_len={len(text)}")
         t = time.time()
-        asyncio.new_event_loop().run_until_complete(self.__main(voicename,text))
+        asyncio.new_event_loop().run_until_complete(self.__main(voicename,text,textevent))
+        mark(
+            textevent,
+            "tts.edge.synthesis_done",
+            detail=f"audio_bytes={self.input_stream.getbuffer().nbytes}",
+        )
         logger.info(f'-------edge tts time:{time.time()-t:.4f}s')
         if self.input_stream.getbuffer().nbytes<=0: #edgetts err
             logger.error('edgetts err!!!!!')
+            mark(textevent, "tts.edge.empty_audio")
             return
         
         self.input_stream.seek(0)
         stream = self.__create_bytes_stream(self.input_stream)
+        mark(
+            textevent,
+            "tts.edge.decode_done",
+            detail=f"samples={stream.shape[0]} chunk={self.chunk}",
+        )
         streamlen = stream.shape[0]
         idx=0
         while streamlen >= self.chunk and self.state==State.RUNNING:
@@ -34,6 +47,8 @@ class EdgeTTS(BaseTTS):
             elif streamlen<self.chunk:
                 eventpoint={'status':'end','text':text}
             eventpoint.update(**textevent) #eventpoint={'status':'end','text':text,'msgevent':textevent}
+            if idx == 0:
+                mark(eventpoint, "tts.edge.first_audio_frame_to_avatar", detail=f"samples={self.chunk}")
             self.parent.put_audio_frame(stream[idx:idx+self.chunk],eventpoint)
             idx += self.chunk
         #if streamlen>0:  #skip last frame(not 20ms)
@@ -57,7 +72,7 @@ class EdgeTTS(BaseTTS):
 
         return stream
     
-    async def __main(self,voicename: str, text: str):
+    async def __main(self,voicename: str, text: str, datainfo: dict):
         try:
             communicate = edge_tts.Communicate(text, voicename)
 
@@ -67,6 +82,12 @@ class EdgeTTS(BaseTTS):
                 if first:
                     first = False
                 if chunk["type"] == "audio" and self.state==State.RUNNING:
+                    mark(
+                        datainfo,
+                        "tts.edge.first_audio_chunk",
+                        detail=f"bytes={len(chunk['data'])}",
+                        once_key="edge_first_audio_chunk",
+                    )
                     #self.push_audio(chunk["data"])
                     self.input_stream.write(chunk["data"])
                     #file.write(chunk["data"])

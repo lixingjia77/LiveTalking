@@ -8,6 +8,7 @@ import torch
 import numpy as np
 from avatars.audio_features.base_asr import BaseASR
 from avatars.ultralight.audio2feature import Audio2Feature
+from utils.trace import mark
 
 # hubert audio feature
 class HubertASR(BaseASR):
@@ -29,6 +30,7 @@ class HubertASR(BaseASR):
             audio_frame = self.get_audio_frame()
             if audio_frame.type==0:
                 is_all_silence=False  
+                first_userdata = audio_frame.userdata
             self.frames.append(audio_frame.data)
             self.output_queue.put(audio_frame)
         
@@ -44,6 +46,13 @@ class HubertASR(BaseASR):
                                             audio_feat_win = self.audio_feat_length, start=self.stride_left_size/2,
                                             feature_idx_multiplier=2)
 
+        if 'first_userdata' in locals():
+            mark(
+                first_userdata,
+                "asr.hubert.first_feat_enqueue",
+                detail=f"batch={len(mel_chunks)} feat_qsize={self.feat_queue.qsize()} cost_ms={(time.time() - start_time) * 1000:.1f}",
+                once_key="asr_first_feat_enqueue",
+            )
         self.feat_queue.put(mel_chunks)
         self.frames = self.frames[-(self.stride_left_size + self.stride_right_size):]
         self.last_is_silence = is_all_silence

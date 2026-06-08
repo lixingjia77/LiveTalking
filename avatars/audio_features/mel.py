@@ -28,14 +28,18 @@ from queue import Queue
 
 from avatars.audio_features.base_asr import BaseASR
 from avatars.wav2lip import audio
+from utils.trace import mark
 
 class MelASR(BaseASR):
 
     def run_step(self):
         ############################################## extract audio feature ##############################################
+        start_time = time.time()
         # get a frame of audio
         for _ in range(self.batch_size*2):
             audioframe = self.get_audio_frame()
+            if audioframe.type == 0:
+                first_userdata = audioframe.userdata
             self.frames.append(audioframe.data)
             # put to output
             self.output_queue.put(audioframe)
@@ -61,6 +65,13 @@ class MelASR(BaseASR):
             else:
                 mel_chunks.append(mel[:, start_idx : start_idx + mel_step_size])
             i += 1
+        if 'first_userdata' in locals():
+            mark(
+                first_userdata,
+                "asr.mel.first_feat_enqueue",
+                detail=f"batch={len(mel_chunks)} feat_qsize={self.feat_queue.qsize()} cost_ms={(time.time() - start_time) * 1000:.1f}",
+                once_key="asr_first_feat_enqueue",
+            )
         self.feat_queue.put(mel_chunks)
         
         # discard the old part to save memory
