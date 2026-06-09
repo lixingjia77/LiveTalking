@@ -61,9 +61,9 @@ def load_model():
     vae, unet, pe = load_all_model()
     #device = torch.device("cuda" if torch.cuda.is_available() else ("mps" if (hasattr(torch.backends, "mps") and torch.backends.mps.is_available()) else "cpu"))
     timesteps = torch.tensor([0], device=device)
-    pe = pe.half().to(device)
-    vae.vae = vae.vae.half().to(device)
-    unet.model = unet.model.half().to(device)
+    pe = pe.half().to(device).eval()
+    vae.vae = vae.vae.half().to(device).eval()
+    unet.model = unet.model.half().to(device).eval()
     # Initialize audio processor and Whisper model
     audio_processor = Audio2Feature(model_path="./models/whisper")
     return vae, unet, pe, timesteps, audio_processor
@@ -124,29 +124,47 @@ class MuseReal(BaseAvatar):
         self.vae, self.unet, self.pe, self.timesteps, self.audio_processor = model
 
         self.frame_list_cycle,self.mask_list_cycle,self.coord_list_cycle,self.mask_coords_list_cycle, self.input_latent_list_cycle = avatar
+        self.model_device = self.unet.device
+        self.model_dtype = self.unet.model.dtype
+        self.input_latent_tensor_cycle = self._build_latent_tensor_cycle(self.input_latent_list_cycle)
+        length = self.input_latent_tensor_cycle.shape[0]
+        self.latent_cycle_indices = torch.cat((
+            torch.arange(length, device=self.model_device),
+            torch.arange(length - 1, -1, -1, device=self.model_device),
+        ))
+        self.latent_cycle_period = self.latent_cycle_indices.shape[0]
 
         self.asr = WhisperASR(opt,self,self.audio_processor)
         self.asr.warm_up()
     
+    def _build_latent_tensor_cycle(self, latents):
+        if isinstance(latents, torch.Tensor):
+            latent_tensor = latents
+            if latent_tensor.dim() == 5 and latent_tensor.shape[1] == 1:
+                latent_tensor = latent_tensor.squeeze(1)
+        else:
+            latent_tensor = torch.cat(latents, dim=0)
+        return latent_tensor.to(device=self.model_device, dtype=self.model_dtype)
 
+    def _get_latent_batch(self, index, batch_size):
+        positions = (torch.arange(batch_size, device=self.model_device) + index).remainder(
+            self.latent_cycle_period
+        )
+        latent_indices = self.latent_cycle_indices.index_select(0, positions)
+        return self.input_latent_tensor_cycle.index_select(0, latent_indices)
+
+    @torch.inference_mode()
     def inference_batch(self, index, audiofeat_batch):
         # 这里的 index 是针对当前 avatar 的索引
         # 返回一个 batch 的推理结果，batch 大小由 audiofeat_batch 决定
-        length = len(self.input_latent_list_cycle)
         whisper_batch = np.stack(audiofeat_batch)
-        latent_batch = []
         batch_size = len(audiofeat_batch)
-        for i in range(batch_size):
-            idx = mirror_index(length, index + i)
-            latent = self.input_latent_list_cycle[idx]
-            latent_batch.append(latent)
-        latent_batch = torch.cat(latent_batch, dim=0)
+        latent_batch = self._get_latent_batch(index, batch_size)
         
         audio_feature_batch = torch.from_numpy(whisper_batch)
-        audio_feature_batch = audio_feature_batch.to(device=self.unet.device,
-                                                        dtype=self.unet.model.dtype)
+        audio_feature_batch = audio_feature_batch.to(device=self.model_device,
+                                                        dtype=self.model_dtype)
         audio_feature_batch = self.pe(audio_feature_batch)
-        latent_batch = latent_batch.to(dtype=self.unet.model.dtype)
 
         pred_latents = self.unet.model(latent_batch, 
                                     self.timesteps, 
@@ -154,19 +172,14 @@ class MuseReal(BaseAvatar):
         pred = self.vae.decode_latents(pred_latents)
         return pred
 
+    @torch.inference_mode()
     def inference_batch_tensor(self, index, audio_feature_batch):
-        length = len(self.input_latent_list_cycle)
         batch_size = audio_feature_batch.shape[0]
-        latent_batch = []
-        for i in range(batch_size):
-            idx = mirror_index(length, index + i)
-            latent_batch.append(self.input_latent_list_cycle[idx])
-        latent_batch = torch.cat(latent_batch, dim=0)
+        latent_batch = self._get_latent_batch(index, batch_size)
 
-        audio_feature_batch = audio_feature_batch.to(device=self.unet.device,
-                                                     dtype=self.unet.model.dtype)
+        audio_feature_batch = audio_feature_batch.to(device=self.model_device,
+                                                     dtype=self.model_dtype)
         audio_feature_batch = self.pe(audio_feature_batch)
-        latent_batch = latent_batch.to(dtype=self.unet.model.dtype)
 
         pred_latents = self.unet.model(latent_batch,
                                     self.timesteps,
