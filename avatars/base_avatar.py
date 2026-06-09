@@ -126,28 +126,36 @@ class BaseAvatar:
         else:
             logger.error(f"Output transport {opt.transport} not found in map.")
 
-    def _drain_queue(self, q: Queue) -> int:
-        count = 0
-        while True:
-            try:
-                q.get_nowait()
-                count += 1
-            except queue.Empty:
-                return count
+    def _is_idle_res_frame(self, item) -> bool:
+        try:
+            _, audio_frames, _ = item
+        except (TypeError, ValueError):
+            return False
+        return bool(audio_frames) and all(frame.type != 0 for frame in audio_frames)
+
+    def _drain_idle_res_frame_queue(self) -> tuple[int, int]:
+        with self.res_frame_queue.mutex:
+            items = list(self.res_frame_queue.queue)
+            kept = [item for item in items if not self._is_idle_res_frame(item)]
+            dropped = len(items) - len(kept)
+            if dropped:
+                self.res_frame_queue.queue.clear()
+                self.res_frame_queue.queue.extend(kept)
+                self.res_frame_queue.unfinished_tasks = max(
+                    0,
+                    self.res_frame_queue.unfinished_tasks - dropped,
+                )
+                self.res_frame_queue.not_full.notify_all()
+            return dropped, len(kept)
 
     def _clear_low_latency_backlog(self, datainfo: dict):
-        dropped_res = self._drain_queue(self.res_frame_queue)
+        dropped_res, kept_res = self._drain_idle_res_frame_queue()
         dropped_output = 0
-        if hasattr(self, "output") and hasattr(self.output, "clear_buffer"):
-            before = self.output.get_buffer_size() if hasattr(self.output, "get_buffer_size") else 0
-            self.output.clear_buffer()
-            after = self.output.get_buffer_size() if hasattr(self.output, "get_buffer_size") else 0
-            dropped_output = max(0, before - after)
         mark(
             datainfo,
             "low_latency.clear_backlog",
             detail=(
-                f"res_dropped={dropped_res} output_dropped={dropped_output} "
+                f"res_idle_dropped={dropped_res} res_kept={kept_res} output_dropped={dropped_output} "
                 f"asr_q={self.asr.queue.qsize() if hasattr(self, 'asr') else -1} "
                 f"asr_out_q={self.asr.output_queue.qsize() if hasattr(self, 'asr') else -1} "
                 f"feat_q={self.asr.feat_queue.qsize() if hasattr(self, 'asr') else -1}"
