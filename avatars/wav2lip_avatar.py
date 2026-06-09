@@ -116,10 +116,11 @@ class LipReal(BaseAvatar):
     
     def inference_batch(self, index, audiofeat_batch):
         # 这里的 index 是针对当前 avatar 的索引
-        # 返回一个 batch 的推理结果，batch 大小由 self.batch_size 决定
+        # 返回一个 batch 的推理结果，batch 大小由 audiofeat_batch 决定
         length = len(self.face_list_cycle)
         img_batch = []
-        for i in range(self.batch_size):
+        batch_size = len(audiofeat_batch)
+        for i in range(batch_size):
             idx = mirror_index(length, index + i)
             face = self.face_list_cycle[idx]
             img_batch.append(face)
@@ -146,4 +147,3 @@ class LipReal(BaseAvatar):
         res_frame = cv2.resize(pred_frame.astype(np.uint8),(x2-x1,y2-y1))
         combine_frame[y1:y2, x1:x2] = res_frame
         return combine_frame
-

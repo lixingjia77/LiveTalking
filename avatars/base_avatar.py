@@ -83,6 +83,9 @@ class BaseAvatar:
         self.__loadcustom()
 
         self.batch_size = opt.batch_size
+        self.low_latency = bool(getattr(opt, "low_latency", False))
+        self.low_latency_batch_size = max(1, int(getattr(opt, "low_latency_batch_size", 2)))
+        self._low_latency_pending_first_frame = False
         self.res_frame_queue = Queue(self.batch_size*2)
         self.render_event = Event()
 
@@ -123,9 +126,40 @@ class BaseAvatar:
         else:
             logger.error(f"Output transport {opt.transport} not found in map.")
 
+    def _drain_queue(self, q: Queue) -> int:
+        count = 0
+        while True:
+            try:
+                q.get_nowait()
+                count += 1
+            except queue.Empty:
+                return count
+
+    def _clear_low_latency_backlog(self, datainfo: dict):
+        dropped_res = self._drain_queue(self.res_frame_queue)
+        dropped_output = 0
+        if hasattr(self, "output") and hasattr(self.output, "clear_buffer"):
+            before = self.output.get_buffer_size() if hasattr(self.output, "get_buffer_size") else 0
+            self.output.clear_buffer()
+            after = self.output.get_buffer_size() if hasattr(self.output, "get_buffer_size") else 0
+            dropped_output = max(0, before - after)
+        mark(
+            datainfo,
+            "low_latency.clear_backlog",
+            detail=(
+                f"res_dropped={dropped_res} output_dropped={dropped_output} "
+                f"asr_q={self.asr.queue.qsize() if hasattr(self, 'asr') else -1} "
+                f"asr_out_q={self.asr.output_queue.qsize() if hasattr(self, 'asr') else -1} "
+                f"feat_q={self.asr.feat_queue.qsize() if hasattr(self, 'asr') else -1}"
+            ),
+        )
+
     # 如果系统没有使用 pipeline，或者为了向后兼容原来的 ttsreal.py
     def put_msg_txt(self, msg, datainfo:dict={}):
         mark(datainfo, "avatar.put_msg_txt", detail=f"sessionid={self.sessionid} text_len={len(msg)}")
+        if self.low_latency:
+            self._low_latency_pending_first_frame = True
+            self._clear_low_latency_backlog(datainfo)
         if hasattr(self, 'tts'):
             self.tts.put_msg_txt(msg, datainfo)
     
@@ -340,14 +374,25 @@ class BaseAvatar:
                 audiofeat_batch = self.asr.feat_queue.get(block=True, timeout=1)
             except queue.Empty:
                 continue
+            current_batch_size = len(audiofeat_batch)
                 
             is_all_silence = True
             audio_frames: list[AudioFrameData] = []
-            for _ in range(self.batch_size * 2):
-                audioframe:AudioFrameData = self.asr.output_queue.get()
-                if audioframe.type == 0:
-                    is_all_silence = False               
-                audio_frames.append(audioframe)
+            try:
+                for _ in range(current_batch_size * 2):
+                    audioframe:AudioFrameData = self.asr.output_queue.get(block=True, timeout=0.5)
+                    if audioframe.type == 0:
+                        is_all_silence = False
+                    audio_frames.append(audioframe)
+            except queue.Empty:
+                logger.warning(
+                    "drop inference batch: missing audio frames, expected=%d got=%d feat_qsize=%d output_qsize=%d",
+                    current_batch_size * 2,
+                    len(audio_frames),
+                    self.asr.feat_queue.qsize(),
+                    self.asr.output_queue.qsize(),
+                )
+                continue
             first_trace = next(
                 (frame.userdata for frame in audio_frames if frame.type == 0 and frame.userdata.get("_trace_start")),
                 None,
@@ -364,7 +409,7 @@ class BaseAvatar:
             current_speaking = not is_all_silence
 
             if is_all_silence: #全为静音数据，只需要取fullimg，不需要推理
-                for i in range(self.batch_size):
+                for i in range(current_batch_size):
                     idx = mirror_index(length, index)
                     if first_trace and i == 0:
                         mark(
@@ -383,7 +428,7 @@ class BaseAvatar:
                     mark(
                         first_trace,
                         "avatar.infer.first_model_start",
-                        detail=f"batch_size={self.batch_size}",
+                        detail=f"batch_size={current_batch_size}",
                         once_key="avatar_first_model_start",
                     )
 
@@ -398,7 +443,7 @@ class BaseAvatar:
                         once_key="avatar_first_model_done",
                     )
                 counttime += (time.perf_counter() - t)
-                count += self.batch_size
+                count += current_batch_size
                 if count >= 100:
                     logger.info(f"------actual avg infer fps:{count/counttime:.4f}")
                     count = 0
@@ -505,6 +550,8 @@ class BaseAvatar:
                     "avatar.output.first_video_push",
                     once_key="avatar_first_video_push",
                 )
+                if self.low_latency:
+                    self._low_latency_pending_first_frame = False
             self.output.push_video_frame(combine_frame)
             self.record_video_data(combine_frame)
 
@@ -548,12 +595,25 @@ class BaseAvatar:
         _totalframe=0
         while not quit_event.is_set(): 
             t = time.perf_counter()
+            original_asr_batch_size = getattr(self.asr, "batch_size", self.batch_size)
+            if self.low_latency and self._low_latency_pending_first_frame:
+                self.asr.batch_size = min(self.low_latency_batch_size, self.batch_size)
+            else:
+                self.asr.batch_size = self.batch_size
             self.asr.run_step()
+            self.asr.batch_size = original_asr_batch_size
 
             buffer_size = self.output.get_buffer_size() if hasattr(self.output, 'get_buffer_size') else 0
             if buffer_size >= 5:
                 logger.debug('sleep qsize=%d', buffer_size)
-                time.sleep(0.04 * buffer_size * 0.8)
+                sleep_time = 0.04 * buffer_size * 0.8
+                if self.low_latency and self._low_latency_pending_first_frame:
+                    if self._low_latency_pending_first_frame and getattr(self.asr, "queue", None) is not None and self.asr.queue.qsize() > 0:
+                        sleep_time = 0
+                    else:
+                        sleep_time = min(sleep_time, 0.02)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
         logger.info('baseavatar render thread stop')
 
         infer_quit_event.set()

@@ -130,11 +130,12 @@ class MuseReal(BaseAvatar):
 
     def inference_batch(self, index, audiofeat_batch):
         # 这里的 index 是针对当前 avatar 的索引
-        # 返回一个 batch 的推理结果，batch 大小由 self.batch_size 决定
+        # 返回一个 batch 的推理结果，batch 大小由 audiofeat_batch 决定
         length = len(self.input_latent_list_cycle)
         whisper_batch = np.stack(audiofeat_batch)
         latent_batch = []
-        for i in range(self.batch_size):
+        batch_size = len(audiofeat_batch)
+        for i in range(batch_size):
             idx = mirror_index(length, index + i)
             latent = self.input_latent_list_cycle[idx]
             latent_batch.append(latent)

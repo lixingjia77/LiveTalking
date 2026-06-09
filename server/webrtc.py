@@ -46,6 +46,16 @@ logger = logging.getLogger(__name__)
 from utils.logger import logger as mylogger
 
 
+def drain_queue(q: queue.Queue) -> int:
+    count = 0
+    while True:
+        try:
+            q.get_nowait()
+            count += 1
+        except queue.Empty:
+            return count
+
+
 class PlayerStreamTrack(MediaStreamTrack):
     """
     A video track that returns an animated flag.
@@ -201,6 +211,11 @@ class HumanPlayer:
 
     def get_buffer_size(self) -> int:
         return self.__video._queue.qsize()
+
+    def clear_buffer(self) -> int:
+        video_count = drain_queue(self.__video._queue)
+        audio_count = drain_queue(self.__audio._queue)
+        return video_count + audio_count
 
     def notify(self,eventpoint):
         if self.__container is not None:

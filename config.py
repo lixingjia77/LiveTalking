@@ -35,6 +35,10 @@ def parse_args():
     parser.add_argument('--avatar_id', type=str, default='wav2lip256_avatar1',
                         help="avatar id in data/avatars")
     parser.add_argument('--batch_size', type=int, default=16, help="infer batch")
+    parser.add_argument('--low_latency', action='store_true',
+                        help="optimize first-frame latency with small first batches and shorter output backpressure sleeps")
+    parser.add_argument('--low_latency_batch_size', type=int, default=2,
+                        help="batch size used while low-latency mode is waiting for the first speaking frame")
     parser.add_argument('--modelres', type=int, default=192)
     parser.add_argument('--modelfile', type=str, default='')
 

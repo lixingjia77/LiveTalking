@@ -46,6 +46,10 @@ class BaseOutput(ABC):
         """获取底层发送队列的积压帧数，用于引擎降速限流"""
         return 0
 
+    def clear_buffer(self) -> None:
+        """清理底层待发送帧；低延迟打断/首帧场景使用"""
+        return None
+
     @abstractmethod
     def stop(self) -> None:
         """关闭输出通道"""

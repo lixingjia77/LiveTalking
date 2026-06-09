@@ -143,11 +143,12 @@ class LightReal(BaseAvatar):
 
     def inference_batch(self, index, audiofeat_batch):
         # 这里的 index 是针对当前 avatar 的索引
-        # 返回一个 batch 的推理结果，batch 大小由 self.batch_size 决定
+        # 返回一个 batch 的推理结果，batch 大小由 audiofeat_batch 决定
         length = len(self.face_list_cycle)
         img_batch = []
 
-        for i in range(self.batch_size):
+        batch_size = len(audiofeat_batch)
+        for i in range(batch_size):
             idx = mirror_index(length, index + i)
             crop_img = self.face_list_cycle[idx]
             img_real_ex = crop_img[4:164, 4:164].copy()

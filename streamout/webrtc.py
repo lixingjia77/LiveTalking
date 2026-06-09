@@ -39,5 +39,10 @@ class WebRTCOutput(BaseOutput):
             return self._player.get_buffer_size()
         return 0
 
+    def clear_buffer(self) -> None:
+        if self._player and hasattr(self._player, 'clear_buffer'):
+            dropped = self._player.clear_buffer()
+            logger.info("WebRTCOutput cleared buffered frames: %s", dropped)
+
     def stop(self) -> None:
         pass
