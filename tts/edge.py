@@ -18,6 +18,8 @@ class EdgeTTS(BaseTTS):
         voicename = textevent.get('tts', {}).get('ref_file',self.opt.REF_FILE) #self.opt.REF_FILE #"zh-CN-YunxiaNeural"
         mark(textevent, "tts.edge.start", detail=f"voice={voicename} text_len={len(text)}")
         t = time.time()
+        self.input_stream.seek(0)
+        self.input_stream.truncate()
         asyncio.new_event_loop().run_until_complete(self.__main(voicename,text,textevent))
         mark(
             textevent,
@@ -27,7 +29,7 @@ class EdgeTTS(BaseTTS):
         logger.info(f'-------edge tts time:{time.time()-t:.4f}s')
         if self.input_stream.getbuffer().nbytes<=0: #edgetts err
             logger.error('edgetts err!!!!!')
-            mark(textevent, "tts.edge.empty_audio")
+            mark(textevent, "tts.edge.empty_audio", detail=f"voice={voicename} text_len={len(text)}")
             return
         
         self.input_stream.seek(0)

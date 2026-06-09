@@ -40,6 +40,8 @@ PRE_SUBMIT_STAGES = [
 
 POST_SUBMIT_STAGES = [
     ("tts.worker.dequeue", "TTS worker 取任务", "TTS worker 开始处理"),
+    ("tts.edge.first_audio_chunk", "Edge 首音频 chunk", "Edge TTS 首个音频字节"),
+    ("tts.edge.first_audio_frame_to_avatar", "Edge 首音频帧到 avatar", "Edge TTS 首帧进入 avatar"),
     ("tts.qwen.first_audio_frame_to_avatar", "Qwen 首音频帧到 avatar", "TTS 首包耗时"),
     ("tts.qwen3vllm.post_ready", "Qwen3 vLLM POST ready", "vLLM HTTP 首响应"),
     ("tts.qwen3vllm.first_pcm_chunk", "Qwen3 vLLM 首 PCM chunk", "vLLM 首个 PCM 字节"),
@@ -75,8 +77,21 @@ HTTP_STAGES = [
     *POST_SUBMIT_STAGES,
 ]
 
+DEFAULT_REF_FILES = {
+    "edgetts": "zh-CN-YunxiaNeural",
+}
+
+DEFAULT_TTS_FAILURE_STAGES = {
+    "tts.edge.empty_audio": "Edge TTS returned no audio. Check that --ref-file is a valid Edge voice name.",
+}
+
+
+def default_ref_file_for_tts(tts: str) -> str:
+    return DEFAULT_REF_FILES.get(tts, "Cherry")
+
 
 def build_runtime_options(args: argparse.Namespace) -> argparse.Namespace:
+    ref_file = args.ref_file or default_ref_file_for_tts(args.tts)
     return argparse.Namespace(
         fps=args.fps,
         l=args.l,
@@ -92,7 +107,7 @@ def build_runtime_options(args: argparse.Namespace) -> argparse.Namespace:
         customvideo_config=args.customvideo_config,
         customopt=load_customopt(args.customvideo_config),
         tts=args.tts,
-        REF_FILE=args.ref_file,
+        REF_FILE=ref_file,
         REF_TEXT=args.ref_text,
         TTS_SERVER=args.tts_server,
         transport="null",
@@ -231,6 +246,14 @@ def wait_trace(
 
         if any(event.get("stage") == complete_stage for event in last_events):
             return last_events
+        for event in last_events:
+            stage = event.get("stage")
+            if stage in DEFAULT_TTS_FAILURE_STAGES:
+                detail = event.get("detail")
+                detail_suffix = f" detail={detail}" if detail else ""
+                raise RuntimeError(
+                    f"trace {trace_id_value} hit {stage}: {DEFAULT_TTS_FAILURE_STAGES[stage]}{detail_suffix}"
+                )
         time.sleep(args.poll_interval)
 
     seen = ", ".join(event.get("stage", "") for event in last_events)
@@ -359,8 +382,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--modelres", type=int, default=192)
     parser.add_argument("--modelfile", default="")
     parser.add_argument("--customvideo-config", default="")
-    parser.add_argument("--tts", default="qwentts")
-    parser.add_argument("--ref-file", "--REF_FILE", dest="ref_file", default="Cherry")
+    parser.add_argument("--tts", default="edgetts")
+    parser.add_argument(
+        "--ref-file",
+        "--REF_FILE",
+        dest="ref_file",
+        default=None,
+        help="TTS reference file or voice id. Defaults to zh-CN-YunxiaNeural for edgetts, Cherry otherwise.",
+    )
     parser.add_argument("--ref-text", "--REF_TEXT", dest="ref_text", default=None)
     parser.add_argument("--tts-server", "--TTS_SERVER", dest="tts_server", default="http://127.0.0.1:9880")
     parser.add_argument("--qwen-tts-model", default="qwen3-tts-flash-realtime")
