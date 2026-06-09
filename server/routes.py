@@ -8,7 +8,7 @@ import time
 from aiohttp import web
 
 from utils.logger import logger
-from utils.trace import new_trace, mark, trace_id
+from utils.trace import new_trace, mark, trace_id, get_trace_events
 
 
 # ─── 路由工具函数 ──────────────────────────────────────────────────────────
@@ -82,8 +82,9 @@ async def human(request):
                     None, llm_response, params['text'], avatar_session, datainfo
                 )
 
-        mark(datainfo, "http.human.response_ok", detail=f"trace_id={trace_id(datainfo)}")
-        return json_ok()
+        tid = trace_id(datainfo)
+        mark(datainfo, "http.human.response_ok", detail=f"trace_id={tid}")
+        return json_ok(data={"trace_id": tid})
     except Exception as e:
         logger.exception('human route exception:')
         return json_error(str(e))
@@ -207,6 +208,15 @@ async def admin_sessions(request):
         return json_error(str(e))
 
 
+async def trace_events(request):
+    """获取单次请求的结构化 trace 事件，供性能测试和调试使用。"""
+    tid = request.match_info.get("trace_id", "")
+    events = get_trace_events(tid)
+    if not events:
+        return json_error("trace not found", code=404)
+    return json_ok(data={"trace_id": tid, "events": events})
+
+
 # ─── 路由注册 ──────────────────────────────────────────────────────────────
 
 def setup_routes(app):
@@ -219,6 +229,7 @@ def setup_routes(app):
     app.router.add_post("/is_speaking", is_speaking)
     app.router.add_get("/api/admin/config", admin_config)
     app.router.add_get("/api/admin/sessions", admin_sessions)
+    app.router.add_get("/api/traces/{trace_id}", trace_events)
 
     # 注册 avatar 生成相关的路由
     setup_avatar_routes(app)

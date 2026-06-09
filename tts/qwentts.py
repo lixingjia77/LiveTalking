@@ -6,6 +6,7 @@ import numpy as np
 import resampy
 
 from utils.logger import logger
+from utils.trace import mark
 from .base_tts import BaseTTS, State
 from registry import register
 
@@ -181,6 +182,12 @@ class QwenTTS(BaseTTS):
                 eventpoint = {'status': 'start', 'text': self._current_text}
                 self._first_chunk = False
             eventpoint.update(**self._current_textevent)
+            mark(
+                eventpoint,
+                "tts.qwen.first_audio_frame_to_avatar",
+                detail=f"samples={frame.shape[0]}",
+                once_key="qwen_first_audio_frame_to_avatar",
+            )
             self.parent.put_audio_frame(frame, eventpoint)
             idx += self.chunk
 

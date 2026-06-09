@@ -110,6 +110,7 @@ class BaseAvatar:
             logger.error(f"TTS module {opt.tts} not found.")
 
         _output_modules = {
+            'null': 'streamout.null',
             'webrtc': 'streamout.webrtc',
             'rtcpush': 'streamout.webrtc',
             'rtmp': 'streamout.rtmp',
