@@ -116,6 +116,18 @@ class Audio2Feature():
         #print(f"stacked whisper_feature shape:{whisper_feature.shape}")
         return whisper_feature.squeeze(0).cpu().numpy()
 
+    @torch.no_grad()
+    def audio2feat_tensor(self, wav_data):
+        input_feature = self.feature_extractor(
+            wav_data,
+            return_tensors="pt",
+            sampling_rate=16000
+        ).input_features
+        input_feature = input_feature.to(device=device, dtype=weight_dtype)
+        whisper_feature = self.whisper.encoder(input_feature, output_hidden_states=True).hidden_states
+        whisper_feature = torch.stack(whisper_feature, dim=2)
+        return whisper_feature.squeeze(0)
+
     # def audio2feat(self,audio_path):
     #     # get the sample rate of the audio
     #     result = self.model.transcribe(audio_path)

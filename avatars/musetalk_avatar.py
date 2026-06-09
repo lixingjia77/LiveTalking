@@ -44,12 +44,13 @@ from avatars.musetalk.whisper.audio2feature import Audio2Feature
 from avatars.audio_features.whisper import WhisperASR
 import asyncio
 from av import AudioFrame, VideoFrame
-from avatars.base_avatar import BaseAvatar
+from avatars.base_avatar import BaseAvatar, AudioFrameData
 
 from tqdm import tqdm
 from utils.logger import logger
 from utils.image import read_imgs, mirror_index
 from utils.device import initialize_device
+from utils.trace import mark
 from registry import register
 
 device = initialize_device()
@@ -153,6 +154,26 @@ class MuseReal(BaseAvatar):
         pred = self.vae.decode_latents(pred_latents)
         return pred
 
+    def inference_batch_tensor(self, index, audio_feature_batch):
+        length = len(self.input_latent_list_cycle)
+        batch_size = audio_feature_batch.shape[0]
+        latent_batch = []
+        for i in range(batch_size):
+            idx = mirror_index(length, index + i)
+            latent_batch.append(self.input_latent_list_cycle[idx])
+        latent_batch = torch.cat(latent_batch, dim=0)
+
+        audio_feature_batch = audio_feature_batch.to(device=self.unet.device,
+                                                     dtype=self.unet.model.dtype)
+        audio_feature_batch = self.pe(audio_feature_batch)
+        latent_batch = latent_batch.to(dtype=self.unet.model.dtype)
+
+        pred_latents = self.unet.model(latent_batch,
+                                    self.timesteps,
+                                    encoder_hidden_states=audio_feature_batch).sample
+        pred = self.vae.decode_latents(pred_latents)
+        return pred
+
     def paste_back_frame(self,pred_frame,idx:int):
         bbox = self.coord_list_cycle[idx]
         ori_frame = copy.deepcopy(self.frame_list_cycle[idx])
@@ -164,4 +185,189 @@ class MuseReal(BaseAvatar):
 
         combine_frame = get_image_blending(ori_frame,res_frame,bbox,mask,mask_crop_box)
         return combine_frame
+
+
+@register("avatar", "musetalk_fused")
+class MuseRealFused(MuseReal):
+    def __init__(self, opt, model, avatar):
+        super().__init__(opt, model, avatar)
+        self._drain_asr_output_queue()
+
+    def _drain_asr_output_queue(self):
+        while True:
+            try:
+                self.asr.output_queue.get_nowait()
+            except queue.Empty:
+                return
+
+    def _feature2chunks_tensor(self, feature_array, batch_size, audio_feat_win=[0, 5],
+                               start=0, feature_idx_multiplier=2):
+        feature_chunks = []
+        length = feature_array.shape[0]
+        for i in range(batch_size):
+            center_idx = int((i + start) * feature_idx_multiplier)
+            left = int(center_idx - audio_feat_win[0] * feature_idx_multiplier)
+            right = int(center_idx + audio_feat_win[1] * feature_idx_multiplier)
+            selected_idx = [min(max(idx, 0), length - 1) for idx in range(left, right)]
+            selected_idx = torch.tensor(selected_idx, device=feature_array.device, dtype=torch.long)
+            selected_feature = torch.index_select(feature_array, 0, selected_idx)
+            feature_chunks.append(selected_feature.reshape(-1, 384))
+        return torch.stack(feature_chunks, dim=0)
+
+    def _fused_step(self, index, batch_size, last_speaking):
+        start_time = time.perf_counter()
+        audio_frames: list[AudioFrameData] = []
+        is_all_silence = True
+
+        for _ in range(batch_size * 2):
+            audio_frame = self.asr.get_audio_frame()
+            if audio_frame.type == 0:
+                is_all_silence = False
+            self.asr.frames.append(audio_frame.data)
+            audio_frames.append(audio_frame)
+
+        if len(self.asr.frames) <= self.asr.stride_left_size + self.asr.stride_right_size:
+            return index, last_speaking, 0, 0
+
+        current_batch_size = batch_size
+        first_trace = next(
+            (frame.userdata for frame in audio_frames if frame.type == 0 and frame.userdata.get("_trace_start")),
+            None,
+        )
+        if first_trace:
+            mark(
+                first_trace,
+                "avatar.infer.first_audio_batch",
+                detail=f"batch_audio_frames={len(audio_frames)} res_qsize={self.res_frame_queue.qsize()}",
+                once_key="avatar_first_audio_batch",
+            )
+
+        current_speaking = not is_all_silence
+        length = self.get_avatar_length()
+
+        if is_all_silence:
+            for i in range(current_batch_size):
+                idx = mirror_index(length, index)
+                if first_trace and i == 0:
+                    mark(
+                        first_trace,
+                        "avatar.infer.first_silence_frame_enqueue",
+                        detail=f"res_qsize={self.res_frame_queue.qsize()}",
+                        once_key="avatar_first_frame_enqueue",
+                    )
+                self.res_frame_queue.put((None, audio_frames[i * 2:i * 2 + 2], idx))
+                index = index + 1
+        else:
+            if current_speaking and not last_speaking and self.custom_index.get(1) is not None:
+                index = 0
+
+            t = time.perf_counter()
+            inputs = np.concatenate(self.asr.frames)
+            whisper_feature = self.audio_processor.audio2feat_tensor(inputs)
+            audio_feature_batch = self._feature2chunks_tensor(
+                feature_array=whisper_feature,
+                batch_size=current_batch_size,
+                audio_feat_win=[0, 5],
+                start=self.asr.stride_left_size / 2,
+                feature_idx_multiplier=2,
+            )
+            if first_trace:
+                mark(
+                    first_trace,
+                    "asr.whisper.first_feat_enqueue",
+                    detail=(
+                        f"batch={audio_feature_batch.shape[0]} fused=True "
+                        f"cost_ms={(time.perf_counter() - t) * 1000:.1f}"
+                    ),
+                    once_key="asr_first_feat_enqueue",
+                )
+
+            if first_trace:
+                mark(
+                    first_trace,
+                    "avatar.infer.first_model_start",
+                    detail=f"batch_size={current_batch_size} fused=True",
+                    once_key="avatar_first_model_start",
+                )
+
+            pred = self.inference_batch_tensor(index, audio_feature_batch)
+            infer_cost = time.perf_counter() - t
+
+            if first_trace:
+                mark(
+                    first_trace,
+                    "avatar.infer.first_model_done",
+                    detail=f"cost_ms={infer_cost * 1000:.1f} fused=True",
+                    once_key="avatar_first_model_done",
+                )
+
+            for i, res_frame in enumerate(pred):
+                if first_trace and i == 0:
+                    mark(
+                        first_trace,
+                        "avatar.infer.first_frame_enqueue",
+                        detail=f"res_qsize={self.res_frame_queue.qsize()} fused=True",
+                        once_key="avatar_first_frame_enqueue",
+                    )
+                self.res_frame_queue.put((res_frame, audio_frames[i * 2:i * 2 + 2], mirror_index(length, index)))
+                index = index + 1
+
+        self.asr.frames = self.asr.frames[-(self.asr.stride_left_size + self.asr.stride_right_size):]
+
+        if current_speaking != last_speaking:
+            logger.info(f"fused inference 状态切换：{'说话' if last_speaking else '静音'} → {'说话' if current_speaking else '静音'}")
+            last_speaking = current_speaking
+
+        return index, last_speaking, current_batch_size, time.perf_counter() - start_time
+
+    def render(self, quit_event):
+        self.quit_event = quit_event
+
+        self.init_customindex()
+        self.tts.render(quit_event)
+
+        process_quit_event = Event()
+        process_thread = Thread(target=self.process_frames, args=(process_quit_event,))
+        process_thread.start()
+
+        index = 0
+        count = 0
+        counttime = 0
+        last_speaking = False
+        logger.info('start musetalk fused render')
+
+        while not quit_event.is_set():
+            if self.low_latency and self._low_latency_pending_first_frame:
+                current_batch_size = min(self.low_latency_batch_size, self.batch_size)
+            else:
+                current_batch_size = self.batch_size
+
+            index, last_speaking, processed, step_cost = self._fused_step(
+                index,
+                current_batch_size,
+                last_speaking,
+            )
+            if processed:
+                count += processed
+                counttime += step_cost
+                if count >= 100:
+                    logger.info(f"------actual avg fused fps:{count/counttime:.4f}")
+                    count = 0
+                    counttime = 0
+
+            buffer_size = self.output.get_buffer_size() if hasattr(self.output, 'get_buffer_size') else 0
+            if buffer_size >= 5:
+                logger.debug('sleep qsize=%d', buffer_size)
+                sleep_time = 0.04 * buffer_size * 0.8
+                if self.low_latency and self._low_latency_pending_first_frame:
+                    if getattr(self.asr, "queue", None) is not None and self.asr.queue.qsize() > 0:
+                        sleep_time = 0
+                    else:
+                        sleep_time = min(sleep_time, 0.02)
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
+
+        logger.info('musetalk fused render thread stop')
+        process_quit_event.set()
+        process_thread.join()
             

@@ -127,6 +127,7 @@ def main():
     # ─── 加载 avatar 插件（触发 @register 注册）──────────────────────
     _avatar_modules = {
         'musetalk':   'avatars.musetalk_avatar',
+        'musetalk_fused': 'avatars.musetalk_avatar',
         'wav2lip':    'avatars.wav2lip_avatar',
         'ultralight': 'avatars.ultralight_avatar',
     }
@@ -137,7 +138,7 @@ def main():
     warm_up = avatar_mod.warm_up
     logger.info(opt)
 
-    if opt.model == 'musetalk':
+    if opt.model in ('musetalk', 'musetalk_fused'):
         model = load_model()
         global_avatars[opt.avatar_id] = load_avatar(opt.avatar_id) 
         warm_up(opt.batch_size,model)      
