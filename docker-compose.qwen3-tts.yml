@@ -1,0 +1,28 @@
+services:
+  qwen3-tts-vllm-omni:
+    image: vllm/vllm-omni:v0.22.0
+    container_name: qwen3-tts-vllm-omni
+    restart: unless-stopped
+    ipc: host
+    ports:
+      - "8091:8091"
+    volumes:
+      - ${HF_CACHE:-/mnt/newdisk/LLM/Huggingface_cache/}:/root/.cache/huggingface
+    environment:
+      HF_TOKEN: ${HF_TOKEN:-}
+    command: >
+      vllm serve ${MODEL:-Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice}
+      --deploy-config vllm_omni/deploy/qwen3_tts.yaml
+      --host 0.0.0.0
+      --port 8091
+      --gpu-memory-utilization 0.25
+      --trust-remote-code
+      --omni
+      --enforce-eager
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

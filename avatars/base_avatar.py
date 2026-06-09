@@ -100,6 +100,7 @@ class BaseAvatar:
             'indextts2': 'tts.indextts2',
             'azuretts': 'tts.azure',
             'qwentts': 'tts.qwentts',
+            'qwen3vllm': 'tts.qwen3vllm',
             'omnitts': 'tts.omnitts'
         }
 

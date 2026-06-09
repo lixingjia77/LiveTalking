@@ -41,6 +41,9 @@ PRE_SUBMIT_STAGES = [
 POST_SUBMIT_STAGES = [
     ("tts.worker.dequeue", "TTS worker 取任务", "TTS worker 开始处理"),
     ("tts.qwen.first_audio_frame_to_avatar", "Qwen 首音频帧到 avatar", "TTS 首包耗时"),
+    ("tts.qwen3vllm.post_ready", "Qwen3 vLLM POST ready", "vLLM HTTP 首响应"),
+    ("tts.qwen3vllm.first_pcm_chunk", "Qwen3 vLLM 首 PCM chunk", "vLLM 首个 PCM 字节"),
+    ("tts.qwen3vllm.first_audio_frame_to_avatar", "Qwen3 vLLM 首音频帧到 avatar", "PCM 首帧重采样后进入 avatar"),
     ("avatar.first_audio_frame_received", "avatar 收到首音频帧", "首个音频 chunk"),
     ("asr.queue.first_audio_enqueue", "ASR 首音频入队", "进入 ASR 队列"),
     ("asr.queue.first_audio_dequeue", "ASR 首音频出队", "render loop 消费等待"),
@@ -100,6 +103,13 @@ def build_runtime_options(args: argparse.Namespace) -> argparse.Namespace:
         qwen_tts_model=args.qwen_tts_model,
         qwen_tts_url=args.qwen_tts_url,
         dashscope_api_key=args.dashscope_api_key,
+        qwen3_vllm_model=args.qwen3_vllm_model,
+        qwen3_vllm_task_type=args.qwen3_vllm_task_type,
+        qwen3_vllm_language=args.qwen3_vllm_language,
+        qwen3_vllm_api_key=args.qwen3_vllm_api_key,
+        qwen3_vllm_timeout=args.qwen3_vllm_timeout,
+        qwen3_vllm_read_chunk_bytes=args.qwen3_vllm_read_chunk_bytes,
+        qwen3_vllm_max_new_tokens=args.qwen3_vllm_max_new_tokens,
     )
 
 
@@ -350,12 +360,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--modelfile", default="")
     parser.add_argument("--customvideo-config", default="")
     parser.add_argument("--tts", default="qwentts")
-    parser.add_argument("--ref-file", default="Cherry")
-    parser.add_argument("--ref-text", default=None)
-    parser.add_argument("--tts-server", default="http://127.0.0.1:9880")
+    parser.add_argument("--ref-file", "--REF_FILE", dest="ref_file", default="Cherry")
+    parser.add_argument("--ref-text", "--REF_TEXT", dest="ref_text", default=None)
+    parser.add_argument("--tts-server", "--TTS_SERVER", dest="tts_server", default="http://127.0.0.1:9880")
     parser.add_argument("--qwen-tts-model", default="qwen3-tts-flash-realtime")
     parser.add_argument("--qwen-tts-url", default="wss://dashscope.aliyuncs.com/api-ws/v1/realtime")
     parser.add_argument("--dashscope-api-key", default=None)
+    parser.add_argument("--qwen3-vllm-model", "--qwen3_vllm_model", dest="qwen3_vllm_model", default="")
+    parser.add_argument("--qwen3-vllm-task-type", "--qwen3_vllm_task_type", dest="qwen3_vllm_task_type", default="CustomVoice")
+    parser.add_argument("--qwen3-vllm-language", "--qwen3_vllm_language", dest="qwen3_vllm_language", default="Chinese")
+    parser.add_argument("--qwen3-vllm-api-key", "--qwen3_vllm_api_key", dest="qwen3_vllm_api_key", default="EMPTY")
+    parser.add_argument("--qwen3-vllm-timeout", "--qwen3_vllm_timeout", dest="qwen3_vllm_timeout", type=float, default=120.0)
+    parser.add_argument(
+        "--qwen3-vllm-read-chunk-bytes",
+        "--qwen3_vllm_read_chunk_bytes",
+        dest="qwen3_vllm_read_chunk_bytes",
+        type=int,
+        default=960,
+    )
+    parser.add_argument(
+        "--qwen3-vllm-max-new-tokens",
+        "--qwen3_vllm_max_new_tokens",
+        dest="qwen3_vllm_max_new_tokens",
+        type=int,
+        default=4096,
+    )
     return parser.parse_args()
 
 

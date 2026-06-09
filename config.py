@@ -48,11 +48,25 @@ def parse_args():
 
     # ─── TTS ───────────────────────────────────────────────────────────
     parser.add_argument('--tts', type=str, default='edgetts',
-                        help="tts plugin: edgetts/gpt-sovits/cosyvoice/fishtts/tencent/doubao/indextts2/azuretts/qwentts")
+                        help="tts plugin: edgetts/gpt-sovits/cosyvoice/fishtts/tencent/doubao/indextts2/azuretts/qwentts/qwen3vllm")
     parser.add_argument('--REF_FILE', type=str, default="zh-CN-YunxiaNeural",
                         help="参考文件名或语音模型ID")
     parser.add_argument('--REF_TEXT', type=str, default=None)
     parser.add_argument('--TTS_SERVER', type=str, default='http://127.0.0.1:9880')
+    parser.add_argument('--qwen3_vllm_model', type=str, default='',
+                        help="vLLM-Omni Qwen3-TTS model name/path, optional when server has a single model")
+    parser.add_argument('--qwen3_vllm_task_type', type=str, default='CustomVoice',
+                        help="Qwen3-TTS task type: CustomVoice/VoiceDesign/Base")
+    parser.add_argument('--qwen3_vllm_language', type=str, default='Chinese',
+                        help="Qwen3-TTS language: Auto/Chinese/English/etc.")
+    parser.add_argument('--qwen3_vllm_api_key', type=str, default='EMPTY',
+                        help="Bearer token for vLLM-Omni server")
+    parser.add_argument('--qwen3_vllm_timeout', type=float, default=120.0,
+                        help="read timeout seconds for streaming PCM response")
+    parser.add_argument('--qwen3_vllm_read_chunk_bytes', type=int, default=960,
+                        help="PCM read chunk bytes, 960 is 20ms at 24kHz s16 mono")
+    parser.add_argument('--qwen3_vllm_max_new_tokens', type=int, default=4096,
+                        help="max audio tokens for Qwen3-TTS generation; too small truncates audio")
 
     # ─── 传输 ─────────────────────────────────────────────────────────
     parser.add_argument('--transport', type=str, default='webrtc',
